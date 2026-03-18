@@ -171,40 +171,36 @@ function onResults(results) {
   if (results.rightHandLandmarks) dbg += ' RHand';
   document.getElementById('status-text').innerText = dbg;
 
-  // ── 1. BODY / ARMS — Direct Vector IK ──────────────────────────
+  // ── 1. BODY / ARMS — Kalidokit Pose Solver ─────────────────────
+  // Note: Kalidokit handles VRM coordinate space internally.
+  // Do NOT apply axis inversions — they break the VRM-specific output.
   if (pose3D && pose2D) {
     try {
-      const lm = pose3D; // World 3D landmarks (X=right, Y=up, Z=toward camera)
-
-      // Convert key landmarks to Three.js vectors (flip Z to match Three.js scene)
-      const lShoulder = mpToVec(lm[11]);
-      const rShoulder = mpToVec(lm[12]);
-      const lElbow    = mpToVec(lm[13]);
-      const rElbow    = mpToVec(lm[14]);
-      const lWrist    = mpToVec(lm[15]);
-      const rWrist    = mpToVec(lm[16]);
-
-      // --- Direct Vector IK for Arms ---
-      // Upper Arms: direction shoulder → elbow
-      applyBoneDirection('leftUpperArm',  lElbow.clone().sub(lShoulder));
-      applyBoneDirection('rightUpperArm', rElbow.clone().sub(rShoulder));
-
-      // Lower Arms: direction elbow → wrist
-      applyBoneDirection('leftLowerArm',  lWrist.clone().sub(lElbow));
-      applyBoneDirection('rightLowerArm', rWrist.clone().sub(rElbow));
-
-      // --- Spine & Chest: route through Kalidokit Pose solver (smooth, tested) ---
       const poseRig = Kalidokit.Pose.solve(pose3D, pose2D, {
         runtime: 'mediapipe',
         video: sizeObj
       });
+
       if (poseRig) {
+        // Torso
         rigRotation('spine', poseRig.Spine, 0.45, 0.3);
         rigRotation('chest', poseRig.Spine, 0.25, 0.3);
-      }
 
+        // Arms — apply directly as Kalidokit outputs
+        rigRotation('rightUpperArm', poseRig.RightUpperArm, 1, 0.3);
+        rigRotation('rightLowerArm', poseRig.RightLowerArm, 1, 0.3);
+        rigRotation('leftUpperArm',  poseRig.LeftUpperArm,  1, 0.3);
+        rigRotation('leftLowerArm',  poseRig.LeftLowerArm,  1, 0.3);
+
+        // Legs
+        rigRotation('leftUpperLeg',  poseRig.LeftUpperLeg,  1, 0.3);
+        rigRotation('leftLowerLeg',  poseRig.LeftLowerLeg,  1, 0.3);
+        rigRotation('rightUpperLeg', poseRig.RightUpperLeg, 1, 0.3);
+        rigRotation('rightLowerLeg', poseRig.RightLowerLeg, 1, 0.3);
+      }
     } catch(e) {
-      console.warn('Pose IK error:', e);
+      console.warn('Pose solve error:', e);
+      document.getElementById('status-text').innerText += ' [Pose Err]';
     }
   }
 
