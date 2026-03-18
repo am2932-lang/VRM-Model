@@ -205,22 +205,37 @@ function onResults(results) {
         const handFit = Kalidokit.Hand.solve(landmarks, actualHandedness);
         if (!handFit) return;
         
-        const vrmPrefix = actualHandedness === "Left" ? "left" : "right";
+        // BUG 4 FIX: Flip handedness because MediaPipe camera "Left" is subject's right hand in a direct video
+        const vrmPrefix = actualHandedness === "Left" ? "right" : "left";
         const kaliPrefix = actualHandedness;
         
         const fingers = ["Thumb", "Index", "Middle", "Ring", "Little"];
-        const segments = ["Proximal", "Intermediate", "Distal"];
+        const kaliSegments = ["Proximal", "Intermediate", "Distal"];
+        
+        // BUG 1 & 2 FIX: Remap axes for finger curl and invert to fix backwards bending
+        const fixFinger = (rot) => ({
+            x: rot.z,   // curl → correct axis
+            y: rot.y,
+            z: -rot.x
+        });
+
         fingers.forEach(finger => {
-          segments.forEach(segment => {
+          kaliSegments.forEach((segment, i) => {
             const rot = handFit[`${kaliPrefix}${finger}${segment}`];
             if (rot) {
-                rigRotation(`${vrmPrefix}${finger}${segment}`, rot, 1, 0.3);
+                // BUG 3 FIX: VRM thumb uses Metacarpal, Proximal, Distal
+                let vrmSegment = segment;
+                if (finger === "Thumb") {
+                    vrmSegment = ["Metacarpal", "Proximal", "Distal"][i];
+                }
+                rigRotation(`${vrmPrefix}${finger}${vrmSegment}`, fixFinger(rot), 1, 0.3);
             }
           });
         });
         
         const wristRot = handFit[`${kaliPrefix}Wrist`];
-        if (wristRot) {
+        // BUG 5 FIX: Guard against NaN or infinite wrist rotations
+        if (wristRot && isFinite(wristRot.x) && isFinite(wristRot.y) && isFinite(wristRot.z)) {
             rigRotation(`${vrmPrefix}Hand`, { x: wristRot.x, y: wristRot.y, z: wristRot.z }, 1, 0.3);
         }
     } catch (e) {
