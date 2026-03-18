@@ -1,0 +1,21 @@
+{
+  "name": "new-model-",
+  "version": "1.0.0",
+  "description": "---",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@pixiv/three-vrm": "^3.5.1",
+    "kalidokit": "^1.1.5",
+    "three": "^0.183.2"
+  },
+  "devDependencies": {
+    "vite": "^8.0.0"
+  }
+}

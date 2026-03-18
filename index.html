@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Full-Body Video VRM Tracker</title>
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      color: white;
+      font-family: sans-serif;
+      overflow: hidden;
+    }
+    
+    #canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1;
+    }
+
+    #ui-container {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      z-index: 10;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 15px;
+      border-radius: 8px;
+    }
+
+    #video-container {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 320px;
+      height: 240px;
+      z-index: 10;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 2px solid #555;
+    }
+
+    #video-player {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      /* removed scaleX(-1) mirror since this is a pre-recorded video, not a webcam */
+    }
+
+    /* Invisible canvas used by mediapipe if needed */
+    #guides {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      /* Canvas for MediaPipe drawing debug if needed */
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    button, input[type="file"] {
+      margin-top: 10px;
+      cursor: pointer;
+    }
+  </style>
+  
+  <!-- MediaPipe dependencies via CDN for simplicity (or can use npm) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+  
+</head>
+<body>
+
+  <!-- ThreeJS Canvas -->
+  <canvas id="canvas"></canvas>
+
+  <!-- Video Player -->
+  <div id="video-container">
+    <video id="video-player" playsinline controls muted loop></video>
+    <canvas id="guides"></canvas>
+  </div>
+
+  <!-- UI Controls -->
+  <div id="ui-container">
+    <h3>Video Target</h3>
+    <label for="video-upload">Upload local video:</label><br>
+    <input type="file" id="video-upload" accept="video/mp4,video/mpeg,video/*" /><br><br>
+
+    <h3>Avatar Controls</h3>
+    <label for="avatar-upload">Upload .vrm model:</label><br>
+    <input type="file" id="avatar-upload" accept=".vrm" />
+    <p id="status-text">Loading...</p>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
