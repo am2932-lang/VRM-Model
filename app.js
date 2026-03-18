@@ -194,57 +194,72 @@ function onResults(results) {
      }
   }
 
-  // 3. Hands & Fingers
-  const handleHand = (landmarks, handedness) => {
-    if (!landmarks) return;
-    
-    // We are no longer mirroring the webcam, so Kalidokit should use the exact handedness MediaPipe reports
-    const actualHandedness = handedness;
-    
-    try {
-        const handFit = Kalidokit.Hand.solve(landmarks, actualHandedness);
-        if (!handFit) return;
-        
-        // BUG 4 FIX: Flip handedness because MediaPipe camera "Left" is subject's right hand in a direct video
-        const vrmPrefix = actualHandedness === "Left" ? "right" : "left";
-        const kaliPrefix = actualHandedness;
-        
-        const fingers = ["Thumb", "Index", "Middle", "Ring", "Little"];
-        const kaliSegments = ["Proximal", "Intermediate", "Distal"];
-        
-        // BUG 1 & 2 FIX: Remap axes for finger curl and invert to fix backwards bending
-        const fixFinger = (rot) => ({
-            x: rot.z,   // curl → correct axis
-            y: rot.y,
-            z: -rot.x
-        });
+  // 3. Hands & Fingers - using the direct Kalidokit VRM rig map
+  const rigHand = (handFit, side) => {
+    if (!handFit) return;
 
-        fingers.forEach(finger => {
-          kaliSegments.forEach((segment, i) => {
-            const rot = handFit[`${kaliPrefix}${finger}${segment}`];
-            if (rot) {
-                // BUG 3 FIX: VRM thumb uses Metacarpal, Proximal, Distal
-                let vrmSegment = segment;
-                if (finger === "Thumb") {
-                    vrmSegment = ["Metacarpal", "Proximal", "Distal"][i];
-                }
-                rigRotation(`${vrmPrefix}${finger}${vrmSegment}`, fixFinger(rot), 1, 0.3);
-            }
-          });
-        });
-        
-        const wristRot = handFit[`${kaliPrefix}Wrist`];
-        // BUG 5 FIX: Guard against NaN or infinite wrist rotations
-        if (wristRot && isFinite(wristRot.x) && isFinite(wristRot.y) && isFinite(wristRot.z)) {
-            rigRotation(`${vrmPrefix}Hand`, { x: wristRot.x, y: wristRot.y, z: wristRot.z }, 1, 0.3);
-        }
-    } catch (e) {
-        console.warn("Hand solve error:", e);
+    // side: 'Left' or 'Right' (Kalidokit perspective)
+    // VRM perspective is mirrored from MediaPipe camera - so we flip
+    const vrmSide = side === 'Left' ? 'right' : 'left';
+    const kSide = side;
+
+    // Helper to safely rig a finger segment
+    const rigFinger = (kaliKey, vrmBoneName) => {
+        const rot = handFit[kaliKey];
+        if (!rot) return;
+        const boneNode = currentVrm.humanoid.getNormalizedBoneNode(vrmBoneName);
+        if (!boneNode) return;
+        // Kalidokit Hand.solve() returns {x, y, z} Euler angles in radians
+        // VRM normalized bones expect rotation applied directly
+        const euler = new THREE.Euler(rot.x, rot.y, rot.z);
+        const q = new THREE.Quaternion().setFromEuler(euler);
+        boneNode.quaternion.slerp(q, 0.3);
+    };
+
+    // --- Wrist ---
+    const wristRot = handFit[`${kSide}Wrist`];
+    if (wristRot && isFinite(wristRot.x) && isFinite(wristRot.y) && isFinite(wristRot.z)) {
+        rigFinger(`${kSide}Wrist`, `${vrmSide}Hand`);
     }
+
+    // --- Thumb (VRM: Metacarpal, Proximal, Distal) ---
+    rigFinger(`${kSide}ThumbProximal`,     `${vrmSide}ThumbMetacarpal`);
+    rigFinger(`${kSide}ThumbIntermediate`, `${vrmSide}ThumbProximal`);
+    rigFinger(`${kSide}ThumbDistal`,       `${vrmSide}ThumbDistal`);
+
+    // --- Index (VRM: Proximal, Intermediate, Distal) ---
+    rigFinger(`${kSide}IndexProximal`,     `${vrmSide}IndexProximal`);
+    rigFinger(`${kSide}IndexIntermediate`, `${vrmSide}IndexIntermediate`);
+    rigFinger(`${kSide}IndexDistal`,       `${vrmSide}IndexDistal`);
+
+    // --- Middle ---
+    rigFinger(`${kSide}MiddleProximal`,     `${vrmSide}MiddleProximal`);
+    rigFinger(`${kSide}MiddleIntermediate`, `${vrmSide}MiddleIntermediate`);
+    rigFinger(`${kSide}MiddleDistal`,       `${vrmSide}MiddleDistal`);
+
+    // --- Ring ---
+    rigFinger(`${kSide}RingProximal`,     `${vrmSide}RingProximal`);
+    rigFinger(`${kSide}RingIntermediate`, `${vrmSide}RingIntermediate`);
+    rigFinger(`${kSide}RingDistal`,       `${vrmSide}RingDistal`);
+
+    // --- Little (Pinky) ---
+    rigFinger(`${kSide}LittleProximal`,     `${vrmSide}LittleProximal`);
+    rigFinger(`${kSide}LittleIntermediate`, `${vrmSide}LittleIntermediate`);
+    rigFinger(`${kSide}LittleDistal`,       `${vrmSide}LittleDistal`);
   };
 
-  handleHand(results.leftHandLandmarks, "Left");
-  handleHand(results.rightHandLandmarks, "Right");
+  if (results.leftHandLandmarks) {
+    try {
+      const leftFit = Kalidokit.Hand.solve(results.leftHandLandmarks, 'Left');
+      rigHand(leftFit, 'Left');
+    } catch (e) { console.warn('Left hand error:', e); }
+  }
+  if (results.rightHandLandmarks) {
+    try {
+      const rightFit = Kalidokit.Hand.solve(results.rightHandLandmarks, 'Right');
+      rigHand(rightFit, 'Right');
+    } catch (e) { console.warn('Right hand error:', e); }
+  }
 }
 
 // ---- MediaPipe Setup ----
