@@ -22,8 +22,29 @@ scene.add(ambientLight);
 
 // ---- VRM Avatar Setup ----
 let currentVrm = null;
+// Stores the T-pose bone rest directions for Direct IK
+let restDirs = {};
 const gltfLoader = new GLTFLoader();
 gltfLoader.register((parser) => new VRMLoaderPlugin(parser));
+
+// Capture the T-pose rest world direction of each bone we'll animate
+function captureRestDirections(vrm) {
+  restDirs = {};
+  const bones = [
+    'leftUpperArm', 'leftLowerArm',
+    'rightUpperArm', 'rightLowerArm',
+    'chest', 'spine', 'neck'
+  ];
+  bones.forEach(name => {
+    const bone = vrm.humanoid.getNormalizedBoneNode(name);
+    if (bone) {
+      // Store the bone's local -Z axis in world space (the bone "pointing" direction)
+      const dir = new THREE.Vector3(0, 0, -1);
+      dir.applyQuaternion(bone.getWorldQuaternion(new THREE.Quaternion()));
+      restDirs[name] = dir.clone().normalize();
+    }
+  });
+}
 
 function loadVRM(url) {
   gltfLoader.load(
@@ -36,12 +57,8 @@ function loadVRM(url) {
       }
       currentVrm = vrm;
       scene.add(vrm.scene);
-      vrm.scene.rotation.y = Math.PI; // Let's check if 180 makes it back or front. Wait, I'll remove it.
-      // Actually, standard VRMs face +Z. Camera is at +Z looking at -Z. So they face away. 
-      // Rotating by Math.PI makes them face -Z (towards camera).
-      // Wait, in the screenshot, I added `Math.PI` and it faced AWAY. So it must need `0` rotation!
-      vrm.scene.rotation.y = 0; 
-
+      vrm.scene.rotation.y = 0;
+      captureRestDirections(vrm);
       console.log('Avatar loaded successfully');
       document.getElementById('status-text').innerText = "Avatar Loaded!";
     },
@@ -55,10 +72,8 @@ function loadVRM(url) {
   );
 }
 
-// Load default avatar
 loadVRM('/avatar/default.vrm');
 
-// Avatar Upload Logic
 document.getElementById('avatar-upload').addEventListener('change', (event) => {
   const file = event.target.files[0];
   if (!file) return;
@@ -66,7 +81,7 @@ document.getElementById('avatar-upload').addEventListener('change', (event) => {
   loadVRM(url);
 });
 
-// ---- Animation Tracking Loop ----
+// ---- Animation Loop ----
 const clock = new THREE.Clock();
 
 function animate() {
@@ -85,164 +100,178 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ---- Kalidokit Solvers ----
+// ============================================================
+// HYBRID MOTION SOLVER
+// - Body/Arms: Direct Vector IK (most accurate)
+// - Face: Kalidokit Face.solve
+// - Hands: Kalidokit Hand.solve with correct VRM bone map
+// ============================================================
 
-// Helper to smoothly apply rotations to VRM bones
-const rigRotation = (boneName, rotation, dampener = 1, lerpAmount = 0.3) => {
-    if (!currentVrm || !rotation) return;
-    const boneNode = currentVrm.humanoid.getNormalizedBoneNode(boneName);
-    if (!boneNode) return;
-    
-    const euler = new THREE.Euler(
-        rotation.x * dampener,
-        rotation.y * dampener,
-        rotation.z * dampener
-    );
-    const targetQuat = new THREE.Quaternion().setFromEuler(euler);
-    boneNode.quaternion.slerp(targetQuat, lerpAmount);
+// Convert MediaPipe 3D world landmark to normalized Three.js Vector3
+// MediaPipe world: X = right, Y = up, Z = toward camera
+const mpToVec = (lm) => new THREE.Vector3(lm.x, lm.y, -lm.z);
+
+// Smoothly apply a direction vector to a bone using quaternion rotation
+// restDir: the bone's rest-pose world direction (captured from T-pose)
+// targetDir: the desired world direction (computed from landmarks)
+const applyBoneDirection = (boneName, targetDir, lerpAmount = 0.4) => {
+  if (!currentVrm || !restDirs[boneName]) return;
+  const bone = currentVrm.humanoid.getNormalizedBoneNode(boneName);
+  if (!bone) return;
+
+  const rest = restDirs[boneName];
+  const target = targetDir.clone().normalize();
+
+  // Quaternion that rotates from the rest direction to the target direction
+  const rotQuat = new THREE.Quaternion().setFromUnitVectors(rest, target);
+  bone.quaternion.slerp(rotQuat, lerpAmount);
 };
 
-// Callback from MediaPipe Holistic
+// Simple Euler rotation helper (for face/spine where direct Euler is cleaner)
+const rigRotation = (boneName, rotation, dampener = 1, lerpAmount = 0.3) => {
+  if (!currentVrm || !rotation) return;
+  const boneNode = currentVrm.humanoid.getNormalizedBoneNode(boneName);
+  if (!boneNode) return;
+  const euler = new THREE.Euler(
+    rotation.x * dampener,
+    rotation.y * dampener,
+    rotation.z * dampener
+  );
+  boneNode.quaternion.slerp(new THREE.Quaternion().setFromEuler(euler), lerpAmount);
+};
+
+// ============================================================
+// MAIN TRACKING CALLBACK
+// ============================================================
 function onResults(results) {
   if (!currentVrm) return;
-  
+
   const videoElement = document.getElementById('video-player');
-  // Wait until video has loaded dimensions before trying to solve poses
   if (!videoElement || videoElement.videoWidth === 0) return;
 
   const sizeObj = { width: videoElement.videoWidth, height: videoElement.videoHeight };
 
-  // Debug: see what Mediapipe provides visually
-  if (!window.hasLoggedKeys) {
-      const keysText = "Keys available: " + Object.keys(results).join(', ');
-      document.getElementById('status-text').innerHTML = keysText + "<br>";
-      window.hasLoggedKeys = true;
-  }
-
-  // 1. Pose (Arms, Spine, etc.)
-  // Kalidokit requires both 2D and 3D pose landmarks for full body tracking
+  // Resolve 3D world pose (minified in CDN build)
   const pose3D = results.poseWorldLandmarks || results.ea || results.za;
+  const pose2D = results.poseLandmarks;
 
-  // Update on-screen debug visually
-  let debugStr = document.getElementById('status-text').innerHTML;
-  if (!debugStr.includes("Tracking:")) debugStr += "Tracking: ";
-  if (results.poseLandmarks) debugStr += "Pose ";
-  if (pose3D) debugStr += "Pose3D ";
-  if (results.faceLandmarks) debugStr += "Face ";
-  if (results.leftHandLandmarks) debugStr += "LHand ";
-  if (results.rightHandLandmarks) debugStr += "RHand ";
-  document.getElementById('status-text').innerText = debugStr;
+  // Debug overlay
+  let dbg = 'Tracking:';
+  if (pose2D) dbg += ' Pose';
+  if (pose3D) dbg += ' 3D';
+  if (results.faceLandmarks) dbg += ' Face';
+  if (results.leftHandLandmarks) dbg += ' LHand';
+  if (results.rightHandLandmarks) dbg += ' RHand';
+  document.getElementById('status-text').innerText = dbg;
 
-  if (results.poseLandmarks && pose3D) {
-     try {
-         const poseRig = Kalidokit.Pose.solve(pose3D, results.poseLandmarks, {
-             runtime: 'mediapipe',
-             video: sizeObj
-         });
-         
-         if (poseRig) {
-             // 3. Pose (Arms & Torso) - Adjusted to fix inverted/backward bending
-             rigRotation('chest', poseRig.Spine, 0.25, 0.3);
-             rigRotation('spine', poseRig.Spine, 0.45, 0.3);
-             
-             // The arm rotations from Kalidokit often assume a different forward-facing axis than VRMs natively use 
-             // (usually Y-up Z-forward vs Y-up Z-backward). We must invert X and Z to fix the "backward bend".
-             const fixArm = (rot) => ({ x: -rot.x, y: rot.y, z: -rot.z });
-             
-             rigRotation('rightUpperArm', fixArm(poseRig.RightUpperArm), 1, 0.3);
-             rigRotation('rightLowerArm', fixArm(poseRig.RightLowerArm), 1, 0.3);
-             rigRotation('leftUpperArm', fixArm(poseRig.LeftUpperArm), 1, 0.3);
-             rigRotation('leftLowerArm', fixArm(poseRig.LeftLowerArm), 1, 0.3);
-             
-             rigRotation('leftUpperLeg', poseRig.LeftUpperLeg, 1, 0.3);
-             rigRotation('leftLowerLeg', poseRig.LeftLowerLeg, 1, 0.3);
-             rigRotation('rightUpperLeg', poseRig.RightUpperLeg, 1, 0.3);
-             rigRotation('rightLowerLeg', poseRig.RightLowerLeg, 1, 0.3);
-         }
-     } catch (e) {
-         document.getElementById('status-text').innerText = "Pose Error: " + e.message;
-         console.warn("Pose solve error:", e);
-     }
-  } else if (results.poseLandmarks && !pose3D) {
-      document.getElementById('status-text').innerText += " (Missing 3D Pose data!)";
+  // ── 1. BODY / ARMS — Direct Vector IK ──────────────────────────
+  if (pose3D && pose2D) {
+    try {
+      const lm = pose3D; // World 3D landmarks
+
+      // Convert key landmarks to Three.js vectors
+      const lShoulder = mpToVec(lm[11]);
+      const rShoulder = mpToVec(lm[12]);
+      const lElbow    = mpToVec(lm[13]);
+      const rElbow    = mpToVec(lm[14]);
+      const lWrist    = mpToVec(lm[15]);
+      const rWrist    = mpToVec(lm[16]);
+      const lHip      = mpToVec(lm[23]);
+      const rHip      = mpToVec(lm[24]);
+
+      // --- Upper Arms: Direction from Shoulder to Elbow ---
+      applyBoneDirection('leftUpperArm',  lElbow.clone().sub(lShoulder));
+      applyBoneDirection('rightUpperArm', rElbow.clone().sub(rShoulder));
+
+      // --- Lower Arms: Direction from Elbow to Wrist ---
+      applyBoneDirection('leftLowerArm',  lWrist.clone().sub(lElbow));
+      applyBoneDirection('rightLowerArm', rWrist.clone().sub(rElbow));
+
+      // --- Spine: Direction from Hip midpoint to Shoulder midpoint ---
+      const hipMid = lHip.clone().add(rHip).multiplyScalar(0.5);
+      const shoulderMid = lShoulder.clone().add(rShoulder).multiplyScalar(0.5);
+      const spineDir = shoulderMid.clone().sub(hipMid).normalize();
+
+      // Spine lean: compute pitch (forward/back) and roll (side tilt) from spine direction
+      const spinePitch = Math.atan2(spineDir.z, spineDir.y);
+      const spineRoll  = Math.atan2(-spineDir.x, spineDir.y);
+
+      const spineRot = { x: spinePitch, y: 0, z: spineRoll };
+      rigRotation('spine', spineRot, 0.45, 0.3);
+      rigRotation('chest', spineRot, 0.25, 0.3);
+
+    } catch(e) {
+      console.warn('Pose IK error:', e);
+    }
   }
-  
-  // 2. Face & Head
+
+  // ── 2. FACE & HEAD — Kalidokit (well-tested solver) ────────────
   if (results.faceLandmarks) {
-     try {
-         const faceRig = Kalidokit.Face.solve(results.faceLandmarks, {
-             runtime: 'mediapipe',
-             video: sizeObj
-         });
-         if (faceRig) {
-             rigRotation('neck', faceRig.head, 0.7, 0.3);
-             
-             if (currentVrm.expressionManager) {
-                 const m = currentVrm.expressionManager;
-                 m.setValue('blinkLeft', faceRig.eye.l);
-                 m.setValue('blinkRight', faceRig.eye.r);
-                 
-                 m.setValue('aa', faceRig.mouth.shape.A);
-                 m.setValue('ee', faceRig.mouth.shape.E);
-                 m.setValue('ih', faceRig.mouth.shape.I);
-                 m.setValue('oh', faceRig.mouth.shape.O);
-                 m.setValue('ou', faceRig.mouth.shape.U);
-             }
-         }
-     } catch (e) {
-         console.warn("Face solve error:", e);
-     }
+    try {
+      const faceRig = Kalidokit.Face.solve(results.faceLandmarks, {
+        runtime: 'mediapipe',
+        video: sizeObj
+      });
+      if (faceRig) {
+        rigRotation('neck', faceRig.head, 0.7, 0.3);
+
+        if (currentVrm.expressionManager) {
+          const m = currentVrm.expressionManager;
+          m.setValue('blinkLeft',  faceRig.eye.l);
+          m.setValue('blinkRight', faceRig.eye.r);
+          m.setValue('aa', faceRig.mouth.shape.A);
+          m.setValue('ee', faceRig.mouth.shape.E);
+          m.setValue('ih', faceRig.mouth.shape.I);
+          m.setValue('oh', faceRig.mouth.shape.O);
+          m.setValue('ou', faceRig.mouth.shape.U);
+        }
+      }
+    } catch(e) { console.warn('Face solve error:', e); }
   }
 
-  // 3. Hands & Fingers - using the direct Kalidokit VRM rig map
+  // ── 3. HANDS & FINGERS — Kalidokit + correct VRM bone map ──────
   const rigHand = (handFit, side) => {
     if (!handFit) return;
-
-    // side: 'Left' or 'Right' (Kalidokit perspective)
-    // VRM perspective is mirrored from MediaPipe camera - so we flip
+    // MediaPipe "Left" from camera = subject's right hand (mirror effect)
     const vrmSide = side === 'Left' ? 'right' : 'left';
     const kSide = side;
 
-    // Helper to safely rig a finger segment
     const rigFinger = (kaliKey, vrmBoneName) => {
-        const rot = handFit[kaliKey];
-        if (!rot) return;
-        const boneNode = currentVrm.humanoid.getNormalizedBoneNode(vrmBoneName);
-        if (!boneNode) return;
-        // Kalidokit Hand.solve() returns {x, y, z} Euler angles in radians
-        // VRM normalized bones expect rotation applied directly
-        const euler = new THREE.Euler(rot.x, rot.y, rot.z);
-        const q = new THREE.Quaternion().setFromEuler(euler);
-        boneNode.quaternion.slerp(q, 0.3);
+      const rot = handFit[kaliKey];
+      if (!rot) return;
+      const boneNode = currentVrm.humanoid.getNormalizedBoneNode(vrmBoneName);
+      if (!boneNode) return;
+      const euler = new THREE.Euler(rot.x, rot.y, rot.z);
+      boneNode.quaternion.slerp(new THREE.Quaternion().setFromEuler(euler), 0.3);
     };
 
-    // --- Wrist ---
+    // Wrist
     const wristRot = handFit[`${kSide}Wrist`];
     if (wristRot && isFinite(wristRot.x) && isFinite(wristRot.y) && isFinite(wristRot.z)) {
-        rigFinger(`${kSide}Wrist`, `${vrmSide}Hand`);
+      rigFinger(`${kSide}Wrist`, `${vrmSide}Hand`);
     }
 
-    // --- Thumb (VRM: Metacarpal, Proximal, Distal) ---
+    // Thumb: VRM uses Metacarpal, Proximal, Distal
     rigFinger(`${kSide}ThumbProximal`,     `${vrmSide}ThumbMetacarpal`);
     rigFinger(`${kSide}ThumbIntermediate`, `${vrmSide}ThumbProximal`);
     rigFinger(`${kSide}ThumbDistal`,       `${vrmSide}ThumbDistal`);
 
-    // --- Index (VRM: Proximal, Intermediate, Distal) ---
+    // Index
     rigFinger(`${kSide}IndexProximal`,     `${vrmSide}IndexProximal`);
     rigFinger(`${kSide}IndexIntermediate`, `${vrmSide}IndexIntermediate`);
     rigFinger(`${kSide}IndexDistal`,       `${vrmSide}IndexDistal`);
 
-    // --- Middle ---
+    // Middle
     rigFinger(`${kSide}MiddleProximal`,     `${vrmSide}MiddleProximal`);
     rigFinger(`${kSide}MiddleIntermediate`, `${vrmSide}MiddleIntermediate`);
     rigFinger(`${kSide}MiddleDistal`,       `${vrmSide}MiddleDistal`);
 
-    // --- Ring ---
+    // Ring
     rigFinger(`${kSide}RingProximal`,     `${vrmSide}RingProximal`);
     rigFinger(`${kSide}RingIntermediate`, `${vrmSide}RingIntermediate`);
     rigFinger(`${kSide}RingDistal`,       `${vrmSide}RingDistal`);
 
-    // --- Little (Pinky) ---
+    // Little/Pinky
     rigFinger(`${kSide}LittleProximal`,     `${vrmSide}LittleProximal`);
     rigFinger(`${kSide}LittleIntermediate`, `${vrmSide}LittleIntermediate`);
     rigFinger(`${kSide}LittleDistal`,       `${vrmSide}LittleDistal`);
@@ -250,33 +279,30 @@ function onResults(results) {
 
   if (results.leftHandLandmarks) {
     try {
-      const leftFit = Kalidokit.Hand.solve(results.leftHandLandmarks, 'Left');
-      rigHand(leftFit, 'Left');
-    } catch (e) { console.warn('Left hand error:', e); }
+      const fit = Kalidokit.Hand.solve(results.leftHandLandmarks, 'Left');
+      rigHand(fit, 'Left');
+    } catch(e) { console.warn('Left hand error:', e); }
   }
   if (results.rightHandLandmarks) {
     try {
-      const rightFit = Kalidokit.Hand.solve(results.rightHandLandmarks, 'Right');
-      rigHand(rightFit, 'Right');
-    } catch (e) { console.warn('Right hand error:', e); }
+      const fit = Kalidokit.Hand.solve(results.rightHandLandmarks, 'Right');
+      rigHand(fit, 'Right');
+    } catch(e) { console.warn('Right hand error:', e); }
   }
 }
 
 // ---- MediaPipe Setup ----
 const videoElement = document.getElementById('video-player');
 
-// Attach video upload logic
 document.getElementById('video-upload').addEventListener('change', (event) => {
   const file = event.target.files[0];
   if (!file) return;
   const url = URL.createObjectURL(file);
   videoElement.src = url;
-  videoElement.play(); // Auto-play the video to start tracking
-  
-  // Start engine if it's the first time
+  videoElement.play();
   if (!mpSystem.isRunning) {
-      mpSystem.isRunning = true;
-      mpSystem.startVideoProcessing();
+    mpSystem.isRunning = true;
+    mpSystem.startVideoProcessing();
   }
 });
 
