@@ -27,21 +27,28 @@ let restDirs = {};
 const gltfLoader = new GLTFLoader();
 gltfLoader.register((parser) => new VRMLoaderPlugin(parser));
 
-// Capture the T-pose rest world direction of each bone we'll animate
+// Capture the T-pose rest world direction of each arm bone from parent→child positions
+// This is the accurate approach: read the ACTUAL bone-to-child direction in T-pose world space
 function captureRestDirections(vrm) {
   restDirs = {};
-  const bones = [
-    'leftUpperArm', 'leftLowerArm',
-    'rightUpperArm', 'rightLowerArm',
-    'chest', 'spine', 'neck'
+
+  // Each pair is [parent, child] — the rest direction is parent_worldPos → child_worldPos
+  const pairs = [
+    ['leftUpperArm',  'leftLowerArm'],
+    ['leftLowerArm',  'leftHand'],
+    ['rightUpperArm', 'rightLowerArm'],
+    ['rightLowerArm', 'rightHand'],
   ];
-  bones.forEach(name => {
-    const bone = vrm.humanoid.getNormalizedBoneNode(name);
-    if (bone) {
-      // Store the bone's local -Z axis in world space (the bone "pointing" direction)
-      const dir = new THREE.Vector3(0, 0, -1);
-      dir.applyQuaternion(bone.getWorldQuaternion(new THREE.Quaternion()));
-      restDirs[name] = dir.clone().normalize();
+
+  pairs.forEach(([parentName, childName]) => {
+    const parentBone = vrm.humanoid.getNormalizedBoneNode(parentName);
+    const childBone  = vrm.humanoid.getNormalizedBoneNode(childName);
+    if (parentBone && childBone) {
+      const pWorld = new THREE.Vector3();
+      const cWorld = new THREE.Vector3();
+      parentBone.getWorldPosition(pWorld);
+      childBone.getWorldPosition(cWorld);
+      restDirs[parentName] = cWorld.clone().sub(pWorld).normalize();
     }
   });
 }
@@ -167,38 +174,34 @@ function onResults(results) {
   // ── 1. BODY / ARMS — Direct Vector IK ──────────────────────────
   if (pose3D && pose2D) {
     try {
-      const lm = pose3D; // World 3D landmarks
+      const lm = pose3D; // World 3D landmarks (X=right, Y=up, Z=toward camera)
 
-      // Convert key landmarks to Three.js vectors
+      // Convert key landmarks to Three.js vectors (flip Z to match Three.js scene)
       const lShoulder = mpToVec(lm[11]);
       const rShoulder = mpToVec(lm[12]);
       const lElbow    = mpToVec(lm[13]);
       const rElbow    = mpToVec(lm[14]);
       const lWrist    = mpToVec(lm[15]);
       const rWrist    = mpToVec(lm[16]);
-      const lHip      = mpToVec(lm[23]);
-      const rHip      = mpToVec(lm[24]);
 
-      // --- Upper Arms: Direction from Shoulder to Elbow ---
+      // --- Direct Vector IK for Arms ---
+      // Upper Arms: direction shoulder → elbow
       applyBoneDirection('leftUpperArm',  lElbow.clone().sub(lShoulder));
       applyBoneDirection('rightUpperArm', rElbow.clone().sub(rShoulder));
 
-      // --- Lower Arms: Direction from Elbow to Wrist ---
+      // Lower Arms: direction elbow → wrist
       applyBoneDirection('leftLowerArm',  lWrist.clone().sub(lElbow));
       applyBoneDirection('rightLowerArm', rWrist.clone().sub(rElbow));
 
-      // --- Spine: Direction from Hip midpoint to Shoulder midpoint ---
-      const hipMid = lHip.clone().add(rHip).multiplyScalar(0.5);
-      const shoulderMid = lShoulder.clone().add(rShoulder).multiplyScalar(0.5);
-      const spineDir = shoulderMid.clone().sub(hipMid).normalize();
-
-      // Spine lean: compute pitch (forward/back) and roll (side tilt) from spine direction
-      const spinePitch = Math.atan2(spineDir.z, spineDir.y);
-      const spineRoll  = Math.atan2(-spineDir.x, spineDir.y);
-
-      const spineRot = { x: spinePitch, y: 0, z: spineRoll };
-      rigRotation('spine', spineRot, 0.45, 0.3);
-      rigRotation('chest', spineRot, 0.25, 0.3);
+      // --- Spine & Chest: route through Kalidokit Pose solver (smooth, tested) ---
+      const poseRig = Kalidokit.Pose.solve(pose3D, pose2D, {
+        runtime: 'mediapipe',
+        video: sizeObj
+      });
+      if (poseRig) {
+        rigRotation('spine', poseRig.Spine, 0.45, 0.3);
+        rigRotation('chest', poseRig.Spine, 0.25, 0.3);
+      }
 
     } catch(e) {
       console.warn('Pose IK error:', e);
