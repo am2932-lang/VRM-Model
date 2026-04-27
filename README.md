@@ -11,7 +11,8 @@ This project completely runs entirely in the browser using JavaScript, removing 
 * **[Kalidokit](https://github.com/yeemachine/kalidokit)**: A kinematic solver that calculates the exact Euler angles and Blendshapes needed to rotate the VRM bones based on the MediaPipe landmarks.
 * **[Vite](https://vitejs.dev/)**: A fast local development server.
 
-## Features
+## Features:
+
 * **Video Upload**: Upload any standard `.mp4` video.
 * **Avatar Upload**: Swap out the default avatar by uploading any valid `.vrm` file.
 * **Full-Body Tracking**: Tracks the spine, arms, legs, individual fingers, and facial expressions (blinking, speaking).
